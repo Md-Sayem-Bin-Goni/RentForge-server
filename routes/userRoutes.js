@@ -10,36 +10,31 @@ const {
 
 /**
  * POST /api/users
- * Upsert user on registration/login (default role 'customer', createdAt)
+ * Upsert user on registration/login (guaranteed default role 'customer', createdAt)
  */
 router.post(['/', '/api/users'], async (req, res) => {
   try {
-    const { email, name, image, phone, address, role } = req.body || {};
+    const { email, name, image, phone, address } = req.body || {};
     if (!email) {
       return res.status(400).send({ message: 'Email is required' });
     }
 
     const normalizedEmail = email.trim();
-    const filter = {
-      $or: [
-        { email: normalizedEmail },
-        { email: normalizedEmail.toLowerCase() },
-      ],
-    };
-
-    const updateFields = {
-      lastLogin: new Date(),
-    };
-    if (name !== undefined) updateFields.name = name;
-    if (image !== undefined) updateFields.image = image;
-    if (phone !== undefined) updateFields.phone = phone;
-    if (address !== undefined) updateFields.address = address;
+    const filter = { email: normalizedEmail };
 
     const updateDoc = {
-      $set: updateFields,
+      $set: {
+        lastLogin: new Date(),
+        ...(name ? { name } : {}),
+        ...(image ? { image } : {}),
+      },
       $setOnInsert: {
+        name: name || normalizedEmail.split('@')[0],
         email: normalizedEmail,
-        role: role || 'customer',
+        image: image || '',
+        role: 'customer',
+        phone: phone || '',
+        address: address || '',
         createdAt: new Date(),
       },
     };
@@ -47,14 +42,18 @@ router.post(['/', '/api/users'], async (req, res) => {
     const result = await usersCollection.updateOne(filter, updateDoc, { upsert: true });
 
     // Ensure Better Auth's user collection in MongoDB is also synchronized
-    if (role) {
-      await authUserCollection.updateMany(filter, {
-        $set: { role, updatedAt: new Date() },
-      });
-    }
+    await authUserCollection.updateMany(
+      { email: normalizedEmail, role: { $exists: false } },
+      { $set: { role: 'customer', updatedAt: new Date() } }
+    );
 
-    res.send(result);
+    res.send({
+      success: true,
+      message: 'User synchronized successfully in users collection',
+      result,
+    });
   } catch (error) {
+    console.error('Failed to upsert user:', error);
     res.status(500).send({ message: 'Failed to upsert user', error: error.message });
   }
 });

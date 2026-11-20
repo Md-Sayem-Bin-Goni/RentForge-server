@@ -91,14 +91,29 @@ router.get(
   ['/featured', '/api/equipment/featured', '/equipment/featured'],
   async (req, res) => {
     try {
-      const items = await equipmentCollection
-        .find({ status: 'Approved' })
+      let items = await equipmentCollection
+        .find({ status: { $in: ['Approved', 'approved'] } })
         .sort({ createdAt: -1 })
         .limit(6)
         .toArray();
 
+      // If no items marked as Approved yet, fall back to newest items so UI always renders
+      if (!items || items.length === 0) {
+        items = await equipmentCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .limit(6)
+          .toArray();
+      }
+
       const normalized = items.map(normalizeEquipmentDoc);
-      res.send(normalized);
+      res.send({
+        success: true,
+        data: normalized,
+        equipment: normalized,
+        items: normalized,
+        total: normalized.length,
+      });
     } catch (error) {
       console.error('Error fetching featured equipment:', error);
       res.status(500).send({ message: 'Failed to fetch featured equipment', error: error.message });
@@ -244,7 +259,7 @@ router.get(['/', '/api/equipment', '/equipment'], async (req, res) => {
 
     // Only filter by Approved if 'all' is not true and not filtering by a specific owner
     if (all !== 'true' && all !== true && !ownerEmail) {
-      filter.status = 'Approved';
+      filter.status = { $in: ['Approved', 'approved'] };
     }
 
     if (ownerEmail && typeof ownerEmail === 'string' && ownerEmail.trim() !== '') {

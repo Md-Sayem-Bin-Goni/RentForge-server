@@ -1,3 +1,5 @@
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -29,6 +31,8 @@ const port = process.env.PORT || 5000;
 // CORS configuration (allowing client origins with credentials)
 const allowedOrigins = [
   process.env.CLIENT_URL,
+  'https://rent-forge-client.vercel.app',
+  'https://rentforge-client.vercel.app',
   'http://localhost:3000',
   'http://localhost:5173',
 ].filter(Boolean);
@@ -36,9 +40,14 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl requests)
+      // Allow requests with no origin (like mobile apps, curl, or server-to-server)
       if (!origin) return callback(null, true);
-      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin) || origin.includes('localhost')) {
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.includes('localhost') ||
+        origin.endsWith('.vercel.app') ||
+        origin === 'https://rent-forge-client.vercel.app'
+      ) {
         return callback(null, true);
       }
       return callback(null, true);
@@ -50,6 +59,14 @@ app.use(
 );
 
 app.use(express.json());
+
+// Normalize double slashes in incoming URLs (e.g. //api/equipment -> /api/equipment)
+app.use((req, res, next) => {
+  if (req.url && req.url.includes('//')) {
+    req.url = req.url.replace(/\/{2,}/g, '/');
+  }
+  next();
+});
 
 // Async DB Connection & Auto-Seed Check
 async function run() {
