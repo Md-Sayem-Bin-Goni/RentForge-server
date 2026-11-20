@@ -15,6 +15,7 @@ const {
 } = require('./config/db');
 
 const userRoutes = require('./routes/userRoutes');
+const equipmentRoutes = require('./routes/equipmentRoutes');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -77,6 +78,12 @@ app.post('/api/jwt', (req, res) => {
 // User Routes
 app.use('/api/users', userRoutes);
 app.use('/users', userRoutes);
+
+// Equipment & Admin Equipment Routes
+app.use('/api/equipment', equipmentRoutes);
+app.use('/equipment', equipmentRoutes);
+app.use('/api/admin', equipmentRoutes);
+app.use(equipmentRoutes);
 
 // Start Server (only when run directly, not during require/tests)
 if (require.main === module) {

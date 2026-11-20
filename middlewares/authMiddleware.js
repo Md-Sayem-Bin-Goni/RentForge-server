@@ -104,9 +104,35 @@ const verifyAdmin = async (req, res, next) => {
   }
 };
 
+/**
+ * Middleware to check if authenticated user role === 'owner' OR 'admin'
+ */
+const verifyOwnerOrAdmin = async (req, res, next) => {
+  try {
+    const email = req.decoded?.email || req.user?.email;
+    if (!email) {
+      return res.status(401).send({ message: 'Unauthorized access' });
+    }
+
+    const user = await usersCollection.findOne({
+      $or: [{ email }, { email: email.toLowerCase() }],
+    });
+
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return res.status(403).send({ message: 'Forbidden access: Owner or Admin role required' });
+    }
+
+    req.currentUser = user;
+    next();
+  } catch (error) {
+    res.status(500).send({ message: 'Internal server error', error: error.message });
+  }
+};
+
 module.exports = {
   verifyToken,
   verifyRenter,
   verifyOwner,
   verifyAdmin,
+  verifyOwnerOrAdmin,
 };
