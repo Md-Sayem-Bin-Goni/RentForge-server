@@ -21,139 +21,7 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
 /* ==========================================================================
-   1. FAVORITES ROUTES (verifyToken, verifyRenter)
-   ========================================================================== */
-
-/**
- * POST /api/favorites
- * Add equipment to user's favorites
- */
-router.post(
-  ['/api/favorites', '/favorites', '/'],
-  (req, res, next) => {
-    // If router is mounted at /api/bookings or /api/payments, pass through
-    if (req.baseUrl.includes('bookings') || req.baseUrl.includes('payments')) return next('route');
-    next();
-  },
-  verifyToken,
-  verifyRenter,
-  async (req, res) => {
-    try {
-      const renterEmail = req.decoded?.email || req.user?.email;
-      const { equipmentId, userEmail } = req.body || {};
-      const email = userEmail || renterEmail;
-
-      if (!equipmentId) {
-        return res.status(400).send({ message: 'equipmentId is required' });
-      }
-
-      const normalizedEmail = email.trim();
-      const existing = await favoritesCollection.findOne({
-        userEmail: normalizedEmail,
-        equipmentId: equipmentId.toString(),
-      });
-
-      if (existing) {
-        return res.status(400).send({ message: 'Equipment is already in your favorites' });
-      }
-
-      const doc = {
-        userEmail: normalizedEmail,
-        equipmentId: equipmentId.toString(),
-        createdAt: new Date(),
-      };
-
-      const result = await favoritesCollection.insertOne(doc);
-      res.status(201).send(result);
-    } catch (error) {
-      res.status(500).send({ message: 'Failed to add favorite', error: error.message });
-    }
-  }
-);
-
-/**
- * GET /api/favorites/:email
- * Get user's favorites with joined equipment details
- */
-router.get(
-  ['/api/favorites/:email', '/favorites/:email'],
-  verifyToken,
-  verifyRenter,
-  async (req, res) => {
-    try {
-      const { email } = req.params;
-      if (!email) {
-        return res.status(400).send({ message: 'Email parameter is required' });
-      }
-
-      const normalizedEmail = email.trim();
-      const favorites = await favoritesCollection
-        .find({
-          $or: [
-            { userEmail: normalizedEmail },
-            { userEmail: normalizedEmail.toLowerCase() },
-          ],
-        })
-        .sort({ createdAt: -1 })
-        .toArray();
-
-      // Join equipment info for each favorite
-      const enrichedFavorites = await Promise.all(
-        favorites.map(async (fav) => {
-          let equipFilter;
-          if (ObjectId.isValid(fav.equipmentId)) {
-            equipFilter = { $or: [{ _id: new ObjectId(fav.equipmentId) }, { _id: fav.equipmentId }] };
-          } else {
-            equipFilter = { _id: fav.equipmentId };
-          }
-
-          const equipment = await equipmentCollection.findOne(equipFilter);
-          return {
-            ...fav,
-            equipment: equipment || null,
-          };
-        })
-      );
-
-      res.send(enrichedFavorites);
-    } catch (error) {
-      res.status(500).send({ message: 'Failed to fetch favorites', error: error.message });
-    }
-  }
-);
-
-/**
- * DELETE /api/favorites/:id
- * Remove equipment from favorites
- */
-router.delete(
-  ['/api/favorites/:id', '/favorites/:id'],
-  verifyToken,
-  verifyRenter,
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      let filter;
-      if (ObjectId.isValid(id)) {
-        filter = { $or: [{ _id: new ObjectId(id) }, { _id: id }] };
-      } else {
-        filter = { _id: id };
-      }
-
-      const result = await favoritesCollection.deleteOne(filter);
-      if (result.deletedCount === 0) {
-        return res.status(404).send({ message: 'Favorite not found' });
-      }
-
-      res.send(result);
-    } catch (error) {
-      res.status(500).send({ message: 'Failed to delete favorite', error: error.message });
-    }
-  }
-);
-
-/* ==========================================================================
-   2. BOOKINGS & STRIPE CHECKOUT
+   BOOKINGS & STRIPE CHECKOUT
    ========================================================================== */
 
 /**
@@ -167,19 +35,23 @@ router.post(
   verifyRenter,
   async (req, res) => {
     try {
-      const renterEmail = req.decoded?.email || req.user?.email;
+      const renterEmail = req.decoded?.email || req.user?.email || req.body?.userEmail;
       const {
         equipmentId,
         equipmentName,
         equipmentTitle,
         equipmentImage,
+        image,
         ownerEmail,
         startDate,
         endDate,
         rentalDays,
+        durationDays,
         rentalType,
         quantity,
         totalPrice,
+        totalAmount,
+        subtotal,
         price,
         deliveryAddress,
       } = req.body || {};
@@ -188,21 +60,23 @@ router.post(
         return res.status(400).send({ message: 'equipmentId is required' });
       }
 
-      const calculatedPrice = Number(totalPrice || price || 0);
+      const calculatedPrice = Number(totalPrice || totalAmount || subtotal || price || 0);
       const bookingQuantity = Number(quantity) || 1;
       const name = equipmentName || equipmentTitle || 'Equipment Rental';
+      const days = Number(rentalDays || durationDays || 1);
+      const finalImage = equipmentImage || image || '';
 
       // 1. Save Booking with paymentStatus: 'Unpaid', bookingStatus: 'Pending'
       const bookingDoc = {
         equipmentId: equipmentId.toString(),
         equipmentName: name,
-        equipmentImage: equipmentImage || '',
+        equipmentImage: finalImage,
         ownerEmail: ownerEmail || '',
         renterEmail,
         customerEmail: renterEmail,
         startDate: startDate ? new Date(startDate) : new Date(),
         endDate: endDate ? new Date(endDate) : new Date(Date.now() + 86400000),
-        rentalDays: Number(rentalDays) || 1,
+        rentalDays: days,
         rentalType: rentalType || 'Daily',
         quantity: bookingQuantity,
         totalPrice: calculatedPrice,
@@ -227,18 +101,22 @@ router.post(
 
       if (isRealStripeKey) {
         try {
+          const stripeImages =
+            finalImage && (finalImage.startsWith('https://') || finalImage.startsWith('http://'))
+              ? [finalImage]
+              : [];
+
           const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card'],
             mode: 'payment',
-            customer_email: renterEmail,
+            ...(renterEmail && renterEmail.includes('@') ? { customer_email: renterEmail.trim() } : {}),
             line_items: [
               {
                 price_data: {
                   currency: 'usd',
                   product_data: {
                     name,
-                    description: `RentForge Rental: ${name} (${bookingDoc.rentalDays} days)`,
-                    images: equipmentImage ? [equipmentImage] : [],
+                    description: `RentForge Rental: ${name} (${days} days)`,
+                    ...(stripeImages.length > 0 ? { images: stripeImages } : {}),
                   },
                   unit_amount: Math.round(calculatedPrice * 100),
                 },
@@ -248,25 +126,35 @@ router.post(
             metadata: {
               bookingId: bookingId.toString(),
               equipmentId: equipmentId.toString(),
-              renterEmail,
+              renterEmail: renterEmail || '',
               ownerEmail: ownerEmail || '',
             },
-            success_url: `${clientUrl}/dashboard/bookings?session_id={CHECKOUT_SESSION_ID}&booking_id=${bookingId}&status=success`,
+            success_url: `${clientUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}&booking_id=${bookingId}&status=success`,
             cancel_url: `${clientUrl}/equipment/${equipmentId}?status=cancelled`,
           });
 
           checkoutUrl = session.url;
           sessionId = session.id;
         } catch (stripeError) {
-          console.warn('Stripe checkout session creation notice:', stripeError.message);
+          console.error('Stripe checkout session creation error:', stripeError.message);
+          return res.status(400).send({
+            message: `Stripe checkout error: ${stripeError.message}`,
+            error: stripeError.message,
+          });
         }
+      } else {
+        return res.status(500).send({
+          message: 'Stripe Secret Key is not configured on the backend server.',
+        });
       }
 
       if (!checkoutUrl) {
-        checkoutUrl = `${clientUrl}/checkout/mock?session_id=${sessionId}&booking_id=${bookingId}&status=success`;
+        return res.status(400).send({
+          message: 'Failed to generate Stripe checkout URL. Please try again.',
+        });
       }
 
-      // Update booking with sessionId
+      // Update booking with sessionId & checkoutUrl
       await bookingsCollection.updateOne(
         { _id: bookingId },
         { $set: { sessionId, checkoutUrl } }
@@ -274,10 +162,12 @@ router.post(
 
       res.status(201).send({
         url: checkoutUrl,
+        checkoutUrl,
         sessionId,
         bookingId,
       });
     } catch (error) {
+      console.error('Failed to create booking checkout:', error);
       res.status(500).send({ message: 'Failed to create booking checkout', error: error.message });
     }
   }
@@ -399,20 +289,85 @@ router.post(
 );
 
 /* ==========================================================================
-   3. ROLE BOOKINGS
+   3. ROLE BOOKINGS & STATUS MANAGEMENT
    ========================================================================== */
+
+/**
+ * PATCH /api/bookings/:id/status
+ * Update booking status or payment status
+ */
+router.patch(
+  [
+    '/api/bookings/:id/status',
+    '/bookings/:id/status',
+    '/:id/status',
+    '/api/bookings/:id',
+    '/bookings/:id',
+    '/:id',
+  ],
+  verifyToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { bookingStatus, rentalStatus, status, paymentStatus } = req.body || {};
+
+      let filter;
+      if (ObjectId.isValid(id)) {
+        filter = { $or: [{ _id: new ObjectId(id) }, { _id: id }] };
+      } else {
+        filter = { _id: id };
+      }
+
+      const updateFields = {
+        updatedAt: new Date(),
+      };
+      if (bookingStatus) updateFields.bookingStatus = bookingStatus;
+      if (rentalStatus) updateFields.rentalStatus = rentalStatus;
+      if (status) updateFields.bookingStatus = status;
+      if (paymentStatus) updateFields.paymentStatus = paymentStatus;
+
+      const result = await bookingsCollection.updateOne(filter, { $set: updateFields });
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: 'Booking not found' });
+      }
+
+      res.send({ success: true, message: 'Booking status updated successfully', result });
+    } catch (error) {
+      res.status(500).send({ message: 'Failed to update booking status', error: error.message });
+    }
+  }
+);
 
 /**
  * GET /api/bookings/customer/:email
  * Get all bookings made by this customer (verifyToken, verifyRenter)
  */
 router.get(
-  ['/api/bookings/customer/:email', '/bookings/customer/:email', '/customer/:email'],
+  [
+    '/api/bookings/customer/:email',
+    '/bookings/customer/:email',
+    '/customer/:email',
+    '/api/bookings/my-rentals',
+    '/bookings/my-rentals',
+    '/my-rentals',
+    '/api/bookings/my-bookings',
+    '/bookings/my-bookings',
+    '/my-bookings',
+  ],
   verifyToken,
   verifyRenter,
   async (req, res) => {
     try {
-      const { email } = req.params;
+      const email =
+        req.params.email ||
+        req.query.email ||
+        req.query.userEmail ||
+        req.decoded?.email ||
+        req.user?.email;
+      if (!email) {
+        return res.status(400).send({ message: 'Customer email is required' });
+      }
+
       const normalizedEmail = email.trim();
       const query = {
         $or: [
@@ -436,12 +391,28 @@ router.get(
  * Get all bookings for equipment listed by this owner (verifyToken, verifyOwner)
  */
 router.get(
-  ['/api/bookings/owner/:email', '/bookings/owner/:email', '/owner/:email'],
+  [
+    '/api/bookings/owner/:email',
+    '/bookings/owner/:email',
+    '/owner/:email',
+    '/api/bookings/owner-rentals',
+    '/bookings/owner-rentals',
+    '/owner-rentals',
+  ],
   verifyToken,
   verifyOwner,
   async (req, res) => {
     try {
-      const { email } = req.params;
+      const email =
+        req.params.email ||
+        req.query.ownerEmail ||
+        req.query.email ||
+        req.decoded?.email ||
+        req.user?.email;
+      if (!email) {
+        return res.status(400).send({ message: 'Owner email is required' });
+      }
+
       const normalizedEmail = email.trim();
       const query = {
         $or: [
@@ -463,7 +434,14 @@ router.get(
  * Get all bookings in the system (verifyToken, verifyAdmin)
  */
 router.get(
-  ['/api/bookings/admin', '/bookings/admin', '/admin'],
+  [
+    '/api/bookings/admin',
+    '/bookings/admin',
+    '/admin',
+    '/api/bookings',
+    '/bookings',
+    '/',
+  ],
   verifyToken,
   verifyAdmin,
   async (req, res) => {

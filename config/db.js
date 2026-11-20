@@ -19,6 +19,7 @@ const client = new MongoClient(
 // Database & Collections
 const db = client.db('rentforgeDB');
 const usersCollection = db.collection('users');
+const authUserCollection = db.collection('user');
 const equipmentCollection = db.collection('equipment');
 const bookingsCollection = db.collection('bookings');
 const paymentsCollection = db.collection('payments');
@@ -29,6 +30,7 @@ module.exports = {
   db,
   ObjectId,
   usersCollection,
+  authUserCollection,
   equipmentCollection,
   bookingsCollection,
   paymentsCollection,
