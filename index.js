@@ -16,6 +16,8 @@ const {
 
 const userRoutes = require('./routes/userRoutes');
 const equipmentRoutes = require('./routes/equipmentRoutes');
+const bookingPaymentRoutes = require('./routes/bookingPaymentRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -83,6 +85,22 @@ app.use('/users', userRoutes);
 app.use('/api/equipment', equipmentRoutes);
 app.use('/equipment', equipmentRoutes);
 app.use('/api/admin', equipmentRoutes);
+
+// Booking, Payment & Favorite Routes
+app.use('/api/favorites', bookingPaymentRoutes);
+app.use('/api/bookings', bookingPaymentRoutes);
+app.use('/api/payments', bookingPaymentRoutes);
+app.use('/favorites', bookingPaymentRoutes);
+app.use('/bookings', bookingPaymentRoutes);
+app.use('/payments', bookingPaymentRoutes);
+app.use(bookingPaymentRoutes);
+
+// Analytics Routes
+app.use('/api/analytics', analyticsRoutes);
+app.use('/analytics', analyticsRoutes);
+app.use(analyticsRoutes);
+
+// General fallback for unmounted router prefixes
 app.use(equipmentRoutes);
 
 // Start Server (only when run directly, not during require/tests)
