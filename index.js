@@ -4,8 +4,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const { ServerApiVersion } = require('mongodb');
 
-const {
+let {
   client,
   db,
   ObjectId,
@@ -27,6 +28,80 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+// Cached / Singleton connection state across Vercel serverless requests
+let cachedDb = null;
+let clientPromise = null;
+let hasCheckedSeed = false;
+
+/**
+ * Cached/singleton connectDB() async helper using MongoClient.
+ * Awaits the active MongoDB connection before querying any collection.
+ * Reconnects automatically if topology was closed or destroyed.
+ */
+async function connectDB() {
+  // If active connection already established and healthy, return cached instance immediately
+  if (cachedDb && client && client.topology && !client.topology.isDestroyed()) {
+    return { client, db: cachedDb };
+  }
+
+  const uri = process.env.MONGODB_URI;
+  if (!uri || (!uri.startsWith('mongodb://') && !uri.startsWith('mongodb+srv://'))) {
+    console.warn('MongoDB URI is not configured or has an invalid scheme');
+    return { client, db };
+  }
+
+  // If client does not exist or topology was destroyed, recreate client
+  if (!client || (client.topology && client.topology.isDestroyed())) {
+    const { MongoClient } = require('mongodb');
+    client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      },
+      maxPoolSize: 10,
+    });
+    global._mongoClient = client;
+    clientPromise = null;
+  }
+
+  // Ensure singleton connection promise
+  if (!clientPromise) {
+    clientPromise = client.connect().then(async (connectedClient) => {
+      console.log('Successfully connected to MongoDB database: rentforgeDB');
+      cachedDb = connectedClient.db('rentforgeDB');
+
+      // Update local collection references to active DB
+      db = cachedDb;
+      usersCollection = db.collection('users');
+      authUserCollection = db.collection('user');
+      equipmentCollection = db.collection('equipment');
+      bookingsCollection = db.collection('bookings');
+      paymentsCollection = db.collection('payments');
+      favoritesCollection = db.collection('favorites');
+
+      if (!hasCheckedSeed) {
+        hasCheckedSeed = true;
+        try {
+          await seedEquipmentIfNeeded();
+        } catch (seedErr) {
+          console.warn('Seed equipment check notice:', seedErr.message);
+        }
+      }
+
+      return connectedClient;
+    }).catch((err) => {
+      clientPromise = null;
+      cachedDb = null;
+      throw err;
+    });
+  }
+
+  const connectedClient = await clientPromise;
+  cachedDb = connectedClient.db('rentforgeDB');
+  return { client: connectedClient, db: cachedDb };
+}
 
 // CORS configuration (allowing client origins with credentials)
 const allowedOrigins = [
@@ -68,23 +143,22 @@ app.use((req, res, next) => {
   next();
 });
 
-// Async DB Connection & Auto-Seed Check
-async function run() {
+// Middleware: Every incoming API request awaits the active MongoDB connection before querying any collection
+app.use(async (req, res, next) => {
   try {
-    const uri = process.env.MONGODB_URI;
-    if (uri && (uri.startsWith('mongodb://') || uri.startsWith('mongodb+srv://'))) {
-      await client.connect();
-      console.log('Successfully connected to MongoDB database: rentforgeDB');
-      // Auto seed equipment catalog if empty
-      await seedEquipmentIfNeeded();
-    } else {
-      console.log('MongoDB client initialized for database: rentforgeDB');
-    }
+    await connectDB();
+    next();
   } catch (error) {
-    console.error('MongoDB connection error:', error.message);
+    console.error('Database connection error on incoming request:', error.message);
+    if (req.path === '/' || req.path === '/favicon.ico') {
+      return next();
+    }
+    return res.status(500).json({
+      message: 'Failed to establish database connection',
+      error: error.message,
+    });
   }
-}
-run().catch(console.dir);
+});
 
 // Root Health Check Route
 app.get('/', (req, res) => {
@@ -132,15 +206,19 @@ app.use('/payments', bookingPaymentRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/analytics', analyticsRoutes);
 
-// Start Server (only when run directly, not during require/tests)
+// Start Server (only when run directly, not during require/tests/vercel)
 if (require.main === module) {
   app.listen(port, () => {
     console.log(`RentForge Server is running on port ${port}`);
   });
 }
 
+// Export app at the bottom
 module.exports = app;
+
+// Attach helper references for backwards compatibility with tests and tooling
 module.exports.app = app;
+module.exports.connectDB = connectDB;
 module.exports.client = client;
 module.exports.db = db;
 module.exports.ObjectId = ObjectId;
