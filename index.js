@@ -2,7 +2,19 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+
+const {
+  client,
+  db,
+  ObjectId,
+  usersCollection,
+  equipmentCollection,
+  bookingsCollection,
+  paymentsCollection,
+  favoritesCollection,
+} = require('./config/db');
+
+const userRoutes = require('./routes/userRoutes');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -23,32 +35,10 @@ app.use(
 
 app.use(express.json());
 
-// MongoDB Connection
-const uri = process.env.MONGODB_URI;
-
-const client = new MongoClient(
-  uri && (uri.startsWith('mongodb://') || uri.startsWith('mongodb+srv://'))
-    ? uri
-    : 'mongodb://localhost:27017',
-  {
-    serverApi: {
-      version: ServerApiVersion.v1,
-      strict: true,
-      deprecationErrors: true,
-    },
-  }
-);
-
-// Database & Collections
-const db = client.db('rentforgeDB');
-const usersCollection = db.collection('users');
-const equipmentCollection = db.collection('equipment');
-const bookingsCollection = db.collection('bookings');
-const paymentsCollection = db.collection('payments');
-const favoritesCollection = db.collection('favorites');
-
+// Async DB Ping / Connection Check
 async function run() {
   try {
+    const uri = process.env.MONGODB_URI;
     if (uri && (uri.startsWith('mongodb://') || uri.startsWith('mongodb+srv://'))) {
       await client.connect();
       console.log('Successfully connected to MongoDB database: rentforgeDB');
@@ -84,8 +74,12 @@ app.post('/api/jwt', (req, res) => {
   }
 });
 
-// Start Server
-if (process.env.NODE_ENV !== 'test') {
+// User Routes
+app.use('/api/users', userRoutes);
+app.use('/users', userRoutes);
+
+// Start Server (only when run directly, not during require/tests)
+if (require.main === module) {
   app.listen(port, () => {
     console.log(`RentForge Server is running on port ${port}`);
   });
@@ -95,6 +89,7 @@ module.exports = {
   app,
   client,
   db,
+  ObjectId,
   usersCollection,
   equipmentCollection,
   bookingsCollection,
